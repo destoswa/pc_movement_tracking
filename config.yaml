@@ -1,0 +1,25 @@
+data:
+  # src_pc1: data\test_real_movement\PC2015_2589_1169.ply
+  # src_pc2: data\test_real_movement\PC2019_2589_1169.ply
+  # src_res: data\test_real_movement\results
+  src_pc1: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_real_movement\results\test_full\PC2015_2589_1169.ply
+  src_pc2: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_real_movement\results\test_full\PC2019_2589_1169.ply
+  src_res: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_real_movement\results\test_full\results
+  # src_pc1: data\test_real_movement\test_small_sample\level_3\alligned_pc_lvl=3_x=274.0_y=274.0_source.ply
+  # src_pc2: data\test_real_movement\test_small_sample\level_3\alligned_pc_lvl=3_x=274.0_y=274.0_target.ply
+  # src_res: data\test_real_movement\test_small_sample\level_3\results
+  # src_pc1: data/test_artificial_movement/2024_2501_1144.ply
+  # src_pc2: data/test_artificial_movement/2024_2501_1144_movement_in_some_part.ply
+  # src_res: data/test_artificial_movement/results
+  # res_suffixe: "2500_1144_quadtree_20k"
+  res_suffixe: "test"
+args:
+  method: pointtoplane  # choose betwee pointtopoint and pointtoplane
+  pointtoplane_radius: 1.0
+  pointtoplane_max_nn: 30
+  max_level: 6
+  min_points: 200
+  huge_translation: [2589500, 1169500, 0]
+  # huge_translation: [0,0,0]
+  do_output_transformed: True
+  output_level: -1 # -1 to output at each level
