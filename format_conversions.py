@@ -182,7 +182,7 @@ def convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type, verb
         print(f"No function for converting {in_type} into {out_type}!!")
         return
     os.makedirs(src_folder_out, exist_ok=True)  # Ensure output folder exists
-    files = [f for f in os.listdir(src_folder_in) if f.endswith(in_type)]
+    files = [f for f in os.listdir(src_folder_in) if f.endswith('.' + in_type)]
     for _, file in tqdm(enumerate(files), total=len(files), desc=f"Converting {in_type} in {out_type}", disable=~verbose):
         try:
             file_out = file.split(in_type)[0] + out_type
@@ -194,17 +194,24 @@ def convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type, verb
 
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 5:
-        src_folder_in = sys.argv[1]
-        src_folder_out = sys.argv[2]
-        in_type = sys.argv[3]
-        out_type = sys.argv[4]
-        verbose = False
-        if len(sys.argv) == 6:
-            if sys.argv[5].lower() == "true":
-                verbose = True
+    src_folder_in = r"D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_real_movement_real_spacing\2588_1170"
+    src_folder_out = src_folder_in
+    in_type = 'las'
+    out_type = 'ply'
+    convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type)
+
+
+    # if len(sys.argv) >= 5:
+    #     src_folder_in = sys.argv[1]
+    #     src_folder_out = sys.argv[2]
+    #     in_type = sys.argv[3]
+    #     out_type = sys.argv[4]
+    #     verbose = False
+    #     if len(sys.argv) == 6:
+    #         if sys.argv[5].lower() == "true":
+    #             verbose = True
         
-        convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type, verbose)
-    else:
-        print("Missing arguments!")
-        quit()
+    #     convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type, verbose)
+    # else:
+    #     print("Missing arguments!")
+    #     quit()

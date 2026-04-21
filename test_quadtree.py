@@ -39,15 +39,16 @@ def read_pc(src_pc):
         raise AttributeError(f"Wrong extension '{ext}'. Should be in '.ply', '.pcd', '.xyz', '.xyzrgb', '.xyzn', '.pts', '.las' and '.laz")
     
 
-def rec_tile_process(tiles, bbox, lvl, src_res, args, transform):
-    source_transformed = deepcopy(tiles['source'])
-    if transform is not None:
-        source_transformed.transform(transform)
+def rec_tile_process(tiles, bbox,  bbox_mother,lvl, src_res, args, transform):
+    source_mother = tiles['source'].crop(bbox_mother)
+    source_mother.transform(transform)
+    source_mother = source_mother.crop(bbox)
+    target_mother = tiles['target'].crop(bbox)
 
-    new_tiles = {
-        'source': source_transformed.crop(bbox),
-        'target': tiles['target'].crop(bbox),
-    }
+    # new_tiles = {
+    #     'source': tiles['source'].crop(bbox),
+    #     'target': tiles['target'].crop(bbox),
+    # }
 
     # Load method
     method = None
@@ -72,88 +73,59 @@ def rec_tile_process(tiles, bbox, lvl, src_res, args, transform):
     # print(max_correspondence[lvl])
     reg = o3d.pipelines.registration.registration_icp(
     # reg = o3d.pipelines.registration.registration_generalized_icp(
-        new_tiles['source'],
-        new_tiles['target'],
+        # new_tiles['source'],
+        # new_tiles['target'],
+        source_mother,
+        target_mother,
         # max_correspondence_distance=0.2,
         # max_correspondence_distance=2,
         # max_correspondence_distance=0.5/1.5**lvl,
         max_correspondence_distance=max_correspondence[lvl],
         # max_correspondence_distance=max_correspondence,
-        init=transform if transform is not None else np.eye(4),
-        # init=np.eye(4),
+        # init=transform,
+        init=np.eye(4),
         estimation_method=method,
         # criteria=o3d.pipelines.registration.ICPConvergenceCriteria(relative_fitness=1.000000e-03, relative_rmse=1.000000e-03, max_iteration=50)
     )
 
-    # new_transform = deepcopy(reg.transformation)
+    new_transform = np.linalg.matmul(transform, reg.transformation)
 
-    # # ignore z transform
-    # reg.transformation[2,3] = 0
+    # # save transformed tile if wanted:
+    # if args.do_output_transformed and args.output_level in [-1, lvl]:
+    #     x,y,_ = bbox.get_min_bound()
+    #     transformed = deepcopy(new_tiles['source']).transform(new_transform)
+    #     src_file = os.path.join(src_res, f'alligned_pc_lvl={lvl}_x={x}_y={y}_source.ply')
+    #     o3d.io.write_point_cloud(src_file, new_tiles['source'])
+    #     src_file = os.path.join(src_res, f'alligned_pc_lvl={lvl}_x={x}_y={y}_target.ply')
+    #     o3d.io.write_point_cloud(src_file, new_tiles['target'])
+    #     src_file = os.path.join(src_res, f'alligned_pc_lvl={lvl}_x={x}_y={y}_transformed.ply')
+    #     o3d.io.write_point_cloud(src_file, transformed)
 
-    # # clip z transform
-    # new_transform[2, 3] = np.clip(new_transform[2, 3], -1.0, 1.0)
-
-    # # clip full transform
-    # t = np.sqrt(np.sum(new_transform[0:3,3]**2))
-    # if t > 10:
-    #     new_transform = np.array([[1,0,0,1],[0,1,0,1],[0,0,1,1],[0,0,0,1]])
-
-    # if reg.inlier_rmse > 0.28:
-    #     new_transform = np.array([[1,0,0,1],[0,1,0,1],[0,0,1,1],[0,0,0,1]])
-
-    # new_tiles['source'].transform(reg.transformation)
-    # new_tiles['target'].transform(reg.transformation)
-    # new_tiles['target'].transform(np.linalg.inv(reg.transformation))
-    # if isinstance(transform, np.ndarray):
-    #     reg.transformation = np.linalg.matmul(transform, reg.transformation)
-
-    # save transformed tile if wanted:
-    if args.do_output_transformed and args.output_level in [-1, lvl]:
-        x,y,_ = bbox.get_min_bound()
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={lvl}_x={x}_y={y}_source.ply')
-        o3d.io.write_point_cloud(src_file, new_tiles['source'])
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={lvl}_x={x}_y={y}_target.ply')
-        o3d.io.write_point_cloud(src_file, new_tiles['target'])
-
-
-
-    # ---- TEMP FOR TESTING ---
-    x,y,_ = bbox.get_min_bound()
-    if lvl == 4 and y == 342.0 and x == 0.0:
-        # print(np.linalg.norm(reg.transformation[0:3, 3]))
-        src_file = r"D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_real_movement\results\test\original.ply"
-        o3d.io.write_point_cloud(src_file, new_tiles['source'])
-
-        src_file = r"D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_real_movement\results\test\target.ply"
-        o3d.io.write_point_cloud(src_file, new_tiles['target'])
-
-        transformed = deepcopy(new_tiles['source']).transform(np.linalg.matmul(transform, reg.transformation))
-        src_file = r"D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_real_movement\results\test\transformed.ply"
-        o3d.io.write_point_cloud(src_file, transformed)
-    # -------------------------
-
-
-
-    new_transform = np.eye(4) if transform is None else np.linalg.matmul(transform, reg.transformation)
     list_res = []
-    if lvl < args.max_level and len(new_tiles['source'].points) > args.min_points:
-        list_res.append((lvl, (bbox.get_min_bound(), reg.fitness, reg.inlier_rmse, reg.transformation), False))
+    bbox_dict = {
+        "min_bound": bbox.get_min_bound().tolist(),
+        "max_bound": bbox.get_max_bound().tolist()
+    }
+    # if lvl < args.max_level and len(new_tiles['source'].points) > args.min_points:
+    if lvl < args.max_level and len(source_mother.points) > args.min_points:
+        list_res.append((lvl, (bbox_dict, reg.fitness, reg.inlier_rmse, new_transform), False))
         bboxes = compute_bbox(bbox)
         for subbbox in bboxes:
             sublist = rec_tile_process(
-                new_tiles, 
-                subbbox, 
-                lvl+1, 
-                src_res, 
-                args, 
-                # reg.transformation
-                new_transform,
+                # new_tiles, 
+                tiles=tiles, 
+                bbox=subbbox,
+                bbox_mother=bbox,
+                lvl=lvl+1, 
+                src_res=src_res, 
+                args=args, 
+                transform=new_transform,
                 )
             for el in sublist:
                 list_res.append(el)
     else:
         # print('Cutting at level: ', lvl)
-        list_res.append((lvl, (bbox.get_min_bound(), reg.fitness, reg.inlier_rmse, reg.transformation), True))
+        list_res.append((lvl, (bbox_dict, reg.fitness, reg.inlier_rmse, new_transform), True))
 
     return list_res
 
@@ -246,7 +218,9 @@ def rec_tile_process_full_tile(tiles, bbox, lvl, src_res, args, transform):
 
 if __name__ == "__main__":
     conf = OmegaConf.load("config.yaml")
-
+    if conf.data.src_res == "default":
+        conf.data.src_res = os.path.join(os.path.dirname(conf.data.src_pc1), 'results')
+        
     # prepare results
     os.makedirs(conf.data.src_res, exist_ok=True)
     pointcloud_res = os.path.join(conf.data.src_res, 'pointclouds')
@@ -294,10 +268,11 @@ if __name__ == "__main__":
     bbox_source = tiles['source'].get_axis_aligned_bounding_box()
     bbox_target = tiles['target'].get_axis_aligned_bounding_box()
 
-    # list_transforms = rec_tile_process(
-    list_transforms = rec_tile_process_full_tile(
+    list_transforms = rec_tile_process(
+    # list_transforms = rec_tile_process_full_tile(
         tiles=tiles, 
         bbox=bbox_source, 
+        bbox_mother=bbox_source,
         lvl=0, 
         src_res=pointcloud_res, 
         args=conf.args,
