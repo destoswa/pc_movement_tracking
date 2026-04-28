@@ -5,6 +5,7 @@ import laspy
 from time import time
 import pickle
 from omegaconf import OmegaConf
+from copy import deepcopy
 
 
 class QuadNode:
@@ -43,12 +44,13 @@ def compute_bbox(boundaries):
     bboxes = []
     for i in range(2):
         for j in range(2):
-            x0 = int(minx + i * spanx)
-            y0 = int(miny + j * spany)
-            x1 = int(x0 + spanx)
-            y1 = int(y0 + spany)
+            x0 = minx + i * spanx
+            y0 = miny + j * spany
+            x1 = x0 + spanx
+            y1 = y0 + spany
             bboxes.append(o3d.geometry.AxisAlignedBoundingBox((x0, y0, minz), (x1, y1, maxz)))
     return bboxes
+
 
 def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
     """Return indices of points inside bbox. xyz: Nx3 array, indices: subset indices."""
@@ -59,7 +61,7 @@ def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
     max_b_w_neigh = max_b + span
 
     pts_src = xyz_src[indices_src]
-    pts_parent = xyz_src[parent.indices_src] if parent != None else xyz_src
+    pts_parent = xyz_tgt[parent.indices_tgt] if parent != None else xyz_tgt
     pts_tgt = xyz_tgt[indices_tgt]
 
     # compute points in source
@@ -72,7 +74,6 @@ def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
         (pts_parent[:, 1] >= min_b_w_neigh[1]) & (pts_parent[:, 1] < max_b_w_neigh[1])
     )
 
-    # sub_pts_src = xyz_src[mask_w_neigh]
     sub_pts_src = pts_parent[mask_w_neigh]
     indices_sub = np.arange(len(sub_pts_src))
     mask_sub = (
@@ -86,7 +87,7 @@ def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
         (pts_tgt[:, 1] >= min_b[1]) & (pts_tgt[:, 1] < max_b[1])
     )
 
-    indices_w_neigh = parent.indices_src[mask_w_neigh] if parent != None else np.arange(len(xyz_src))[mask_w_neigh]
+    indices_w_neigh = parent.indices_tgt[mask_w_neigh] if parent != None else np.arange(len(xyz_tgt))[mask_w_neigh]
 
     return indices_src[mask], indices_tgt[mask_tgt], indices_w_neigh, indices_sub[mask_sub]
 
@@ -136,36 +137,31 @@ def extract_subcloud(pc, indices):
     return sub_pc
 
 
-def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, results, time_subclouds_creation, time_icp, time_transform):
+def run_icp_on_tree(node, pc_src, pc_tgt, src_res, args, transform, results, time_subclouds_creation, time_icp, time_transform):
     """Traverse tree and run ICP on each node."""
     
     x,y,_ = node.bbox.get_min_bound()
     time_sub_0 = time()
-    src_sub_w_neigh = extract_subcloud(pc_source, node.indices_with_neigh)
+    pc_sub_tgt_w_neigh = extract_subcloud(pc_tgt, node.indices_with_neigh)
     time_subclouds_creation_local = time() - time_sub_0
 
-    # save transformed tile if wanted:
-    if args.do_output_transformed and args.output_level in [-1, node.level]:
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_source.ply')
-        o3d.io.write_point_cloud(src_file, src_sub_w_neigh)
-
     # transform local sample
-    time_sub_0 = time()
-    src_sub_w_neigh.transform(transform)
-    time_transform.append(time() - time_sub_0)
+    # time_sub_0 = time()
+    # src_sub_w_neigh.transform(transform)
+    # time_transform.append(time() - time_sub_0)
 
     time_sub_0 = time()
-    src_sub = extract_subcloud(src_sub_w_neigh, node.indices_sub_pts)
-    tgt_sub = extract_subcloud(pc_target, node.indices_tgt)
+    pc_sub_src = extract_subcloud(pc_src, node.indices_src)
+    # tgt_sub = extract_subcloud(src_sub_w_neigh, node.indices_sub_pts)
     time_subclouds_creation_local += time() - time_sub_0
     time_subclouds_creation.append(time_subclouds_creation_local)
 
     # save transformed tile if wanted:
     if args.do_output_transformed and args.output_level in [-1, node.level]:
+        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_source.ply')
+        o3d.io.write_point_cloud(src_file, pc_sub_src)
         src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_target.ply')
-        o3d.io.write_point_cloud(src_file, tgt_sub)
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_transformed.ply')
-        o3d.io.write_point_cloud(src_file, src_sub_w_neigh)
+        o3d.io.write_point_cloud(src_file, pc_sub_tgt_w_neigh)
 
     # choose method
     method = None
@@ -179,32 +175,39 @@ def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, result
     max_correspondence = [0.5, 5, 4, 3, 1.5, 0.4, 0.3, 0.27, 0.25, 0.22, 0.2]
     time_icp0 = time()
     reg = o3d.pipelines.registration.registration_icp(
-        src_sub,
-        tgt_sub,
+        pc_sub_src,
+        pc_sub_tgt_w_neigh,
         max_correspondence_distance=max_correspondence[node.level],
         init=np.eye(4),
         estimation_method=method
     )
     time_icp.append(time() - time_icp0)
 
+
     bbox_dict = {
         "min_bound": node.bbox.get_min_bound().tolist(),
         "max_bound": node.bbox.get_max_bound().tolist()
     }
-    new_transform = np.linalg.matmul(transform, reg.transformation)
+    # new_transform = np.linalg.matmul(transform, reg.transformation)
     results.append((
         node.level,
         (
             bbox_dict,
             reg.fitness,
             reg.inlier_rmse,
-            new_transform
+            reg.transformation
         ),
         node.is_leaf
     ))
 
     for child in node.children:
-        run_icp_on_tree(child, pc_source, pc_target, src_res, args, new_transform, results, time_subclouds_creation, time_icp, time_transform)
+        run_icp_on_tree(child, pc_src, pc_tgt, src_res, args, reg.transformation, results, time_subclouds_creation, time_icp, time_transform)
+
+    # save transformed tile if wanted:
+    if args.do_output_transformed and args.output_level in [-1, node.level]:
+        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_transformed.ply')
+        pc_sub_src.transform(reg.transformation)
+        o3d.io.write_point_cloud(src_file, pc_sub_src)
 
 
 if __name__ == "__main__":
