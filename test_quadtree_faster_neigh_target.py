@@ -157,11 +157,11 @@ def run_icp_on_tree(node, pc_src, pc_tgt, src_res, args, transform, results, tim
     time_subclouds_creation.append(time_subclouds_creation_local)
 
     # save transformed tile if wanted:
-    if args.do_output_transformed and args.output_level in [-1, node.level]:
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_source.ply')
-        o3d.io.write_point_cloud(src_file, pc_sub_src)
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_target.ply')
-        o3d.io.write_point_cloud(src_file, pc_sub_tgt_w_neigh)
+    # if args.do_output_transformed and args.output_level in [-1, node.level]:
+    #     src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_source.ply')
+    #     o3d.io.write_point_cloud(src_file, pc_sub_src)
+    #     src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_target.ply')
+    #     o3d.io.write_point_cloud(src_file, pc_sub_tgt_w_neigh)
 
     # choose method
     method = None
@@ -173,12 +173,13 @@ def run_icp_on_tree(node, pc_src, pc_tgt, src_res, args, transform, results, tim
         raise ValueError(f"The given method is wrong!\n\tGiven: {args.method}\n\tAccepted: [pointtopoint, pointtoplane]")
 
     max_correspondence = [0.5, 5, 4, 3, 1.5, 0.4, 0.3, 0.27, 0.25, 0.22, 0.2]
+    max_correspondence = [0.5, 5, 4, 3, 1.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
     time_icp0 = time()
     reg = o3d.pipelines.registration.registration_icp(
         pc_sub_src,
         pc_sub_tgt_w_neigh,
         max_correspondence_distance=max_correspondence[node.level],
-        init=np.eye(4),
+        init=transform,
         estimation_method=method
     )
     time_icp.append(time() - time_icp0)
@@ -188,7 +189,7 @@ def run_icp_on_tree(node, pc_src, pc_tgt, src_res, args, transform, results, tim
         "min_bound": node.bbox.get_min_bound().tolist(),
         "max_bound": node.bbox.get_max_bound().tolist()
     }
-    # new_transform = np.linalg.matmul(transform, reg.transformation)
+    new_transform = np.linalg.matmul(transform, reg.transformation)
     results.append((
         node.level,
         (
@@ -201,13 +202,17 @@ def run_icp_on_tree(node, pc_src, pc_tgt, src_res, args, transform, results, tim
     ))
 
     for child in node.children:
-        run_icp_on_tree(child, pc_src, pc_tgt, src_res, args, reg.transformation, results, time_subclouds_creation, time_icp, time_transform)
+        run_icp_on_tree(child, pc_src, pc_tgt, src_res, args, new_transform, results, time_subclouds_creation, time_icp, time_transform)
 
-    # save transformed tile if wanted:
-    if args.do_output_transformed and args.output_level in [-1, node.level]:
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_transformed.ply')
-        pc_sub_src.transform(reg.transformation)
-        o3d.io.write_point_cloud(src_file, pc_sub_src)
+    # # save transformed tile if wanted:
+    # if args.do_output_transformed and args.output_level in [-1, node.level] and np.array_equal(reg.transformation, np.eye(4)):
+    #     src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_source.ply')
+    #     o3d.io.write_point_cloud(src_file, pc_sub_src)
+    #     src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_target.ply')
+    #     o3d.io.write_point_cloud(src_file, pc_sub_tgt_w_neigh)
+    #     src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_transformed.ply')
+    #     pc_sub_src.transform(reg.transformation)
+    #     o3d.io.write_point_cloud(src_file, pc_sub_src)
 
 
 if __name__ == "__main__":
