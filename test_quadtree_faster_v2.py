@@ -5,20 +5,8 @@ import laspy
 from time import time
 import pickle
 from omegaconf import OmegaConf
-
-
-class QuadNode:
-    """Quadtree node storing spatial bbox, point indices, level, and children."""
-    def __init__(self, bbox, indices_src, indices_tgt,indices_with_neigh, indices_sub_pts, level, parent):
-        self.bbox = bbox
-        self.indices_src = indices_src
-        self.indices_with_neigh = indices_with_neigh
-        self.indices_sub_pts = indices_sub_pts
-        self.indices_tgt = indices_tgt
-        self.level = level
-        self.parent = parent
-        self.children = []
-        self.is_leaf = True
+from plyfile import PlyData
+from src.quadnode import QuadNode
 
 
 def read_pc(src_pc):
@@ -39,7 +27,6 @@ def read_ply_with_scalars(ply_path):
     """
     Read a PLY file and return an Open3D point cloud + a dict of scalar fields.
     """
-    from plyfile import PlyData
     
     plydata = PlyData.read(ply_path)
     vertex = plydata['vertex']
@@ -111,7 +98,6 @@ def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
         (pts_parent[:, 1] >= min_b_w_neigh[1]) & (pts_parent[:, 1] < max_b_w_neigh[1])
     )
 
-    # sub_pts_src = xyz_src[mask_w_neigh]
     sub_pts_src = pts_parent[mask_w_neigh]
     indices_sub = np.arange(len(sub_pts_src))
     mask_sub = (
@@ -130,51 +116,11 @@ def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
     return indices_src[mask], indices_tgt[mask_tgt], indices_w_neigh, indices_sub[mask_sub]
 
 
-# def build_quadtree(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt, indices_with_neigh, indices_sub_pts, level, max_level, min_points):
-#     """Recursively build quadtree based on point density."""
-
-#     node = QuadNode(bbox, indices_src, indices_tgt, indices_with_neigh, indices_sub_pts, level, parent)
-
-#     # stopping condition
-#     if level == max_level:
-#         return node
-
-#     sub_bboxes = compute_bbox(bbox)
-    
-    
-#     children_indices = []
-#     for subbbox in sub_bboxes:
-#         sub_idx_src, sub_idx_tgt, sub_idx_with_neigh, sub_idx_sub_pts = points_in_bbox(xyz_src, xyz_tgt, parent, subbbox, indices_src, indices_tgt)
-
-#         if len(sub_idx_src) <= min_points or len(sub_idx_tgt) <= min_points:
-#             continue
-
-#         children_indices.append((subbbox, sub_idx_src, sub_idx_tgt, sub_idx_with_neigh, sub_idx_sub_pts))
-
-#     # stopping condition
-#     if len(children_indices) != 4:
-#         return node
-    
-#     for (subbbox, sub_idx_src, sub_idx_tgt, sub_idx_with_neigh, sub_idx_sub_pts) in children_indices:
-#         child = build_quadtree(
-#             xyz_src, xyz_tgt, node, subbbox, sub_idx_src, sub_idx_tgt, sub_idx_with_neigh, sub_idx_sub_pts,
-#             level + 1, max_level, min_points
-#         )
-#         node.children.append(child)
-
-#     if node.children:
-#         node.is_leaf = False
-
-#     return node
-
-
 def build_quadtree(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt, indices_with_neigh, indices_sub_pts, level, max_level, min_points):
     """Recursively build quadtree based on point density."""
 
     node = QuadNode(bbox, indices_src, indices_tgt, indices_with_neigh, indices_sub_pts, level, parent)
-    # print(bbox.get_min_bound())
-    # print(bbox.get_max_bound())
-    # print('---')
+
     # stopping condition
     if level >= max_level or len(indices_src) <= min_points or len(indices_tgt) <= min_points:
         return node
@@ -199,35 +145,6 @@ def build_quadtree(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt, ind
     return node
 
 
-# def build_quadtree(xyz_src, xyz_tgt, bbox, indices_src, indices_tgt, indices_with_neigh, indices_sub_pts, level, max_level, min_points):
-#     """Recursively build quadtree based on point density."""
-
-#     node = QuadNode(bbox, indices_src, indices_tgt, indices_with_neigh, indices_sub_pts, level)
-
-#     # stopping condition
-#     if level >= max_level or len(indices_src) <= min_points or len(indices_tgt) <= min_points:
-#         return node
-
-#     sub_bboxes = compute_bbox(bbox)
-
-#     for subbbox in sub_bboxes:
-#         sub_idx_src, sub_idx_tgt, sub_idx_with_neigh, sub_idx_sub_pts = points_in_bbox(xyz_src, xyz_tgt, subbbox, indices_src, indices_tgt)
-
-#         if len(sub_idx_src) == 0 or len(sub_idx_tgt) == 0:
-#             continue
-
-#         child = build_quadtree(
-#             xyz_src, xyz_tgt, subbbox, sub_idx_src, sub_idx_tgt, sub_idx_with_neigh, sub_idx_sub_pts,
-#             level + 1, max_level, min_points
-#         )
-#         node.children.append(child)
-
-#     if node.children:
-#         node.is_leaf = False
-
-#     return node
-
-
 def extract_subcloud(pc, indices):
     """Return a sub pointcloud from indices (including normals if available)."""
     
@@ -247,7 +164,7 @@ def extract_subcloud(pc, indices):
 def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, results, time_subclouds_creation, time_icp, time_transform):
     """Traverse tree and run ICP on each node."""
     
-    x,y,_ = node.bbox.get_min_bound()
+    x,y,_ = node.bbox['min_bound']
     time_sub_0 = time()
     src_sub_w_neigh = extract_subcloud(pc_source, node.indices_with_neigh)
     time_subclouds_creation_local = time() - time_sub_0
@@ -296,23 +213,16 @@ def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, result
     )
     time_icp.append(time() - time_icp0)
 
-    bbox_dict = {
-        "min_bound": node.bbox.get_min_bound().tolist(),
-        "max_bound": node.bbox.get_max_bound().tolist()
-    }
-    # print(bbox_dict)
-
     new_transform = np.linalg.matmul(transform, reg.transformation)
-    results.append((
-        node.level,
-        (
-            bbox_dict,
-            reg.fitness,
-            reg.inlier_rmse,
-            new_transform
-        ),
-        node.is_leaf
-    ))
+    node.fitness = reg.fitness
+    node.inlier_rmse = reg.inlier_rmse
+    node.transform = new_transform
+
+    node.indices_src = None
+    node.indices_with_neigh = None
+    node.indices_sub_pts = None
+    node.indices_tgt = None
+    results.append(node)
 
     for child in node.children:
         run_icp_on_tree(child, pc_source, pc_target, src_res, args, new_transform, results, time_subclouds_creation, time_icp, time_transform)
@@ -387,9 +297,9 @@ if __name__ == "__main__":
 
     
     run_icp_on_tree(root, tiles['source'], tiles['target'], pointcloud_res, conf.args, np.eye(4), results, time_subclouds_creation, time_icp, time_transform)
-
+    
     with open(src_result_transforms, 'wb') as f:
-        pickle.dump(results, f)
+        pickle.dump(root, f)
 
     with open(src_result_offset, 'w') as f:
             f.write(f"{offset[0]},{offset[1]},{offset[2]}")

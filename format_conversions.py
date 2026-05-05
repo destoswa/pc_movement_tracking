@@ -194,11 +194,11 @@ def convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type, verb
 
 
 if __name__ == "__main__":
-    src_folder_in = r"D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_real_movement_real_spacing\2588_1170"
+    src_folder_in = r"D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_10_swam_and_lake\2588_1168_lake\results\new"
     src_folder_out = src_folder_in
     in_type = 'las'
     out_type = 'ply'
-    convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type)
+    convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type, True)
 
 
     # if len(sys.argv) >= 5:
