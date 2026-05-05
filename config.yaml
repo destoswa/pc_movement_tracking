@@ -1,15 +1,18 @@
 data:
-  src_pc1: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_10_swamp_and_lake\2588_1169_swamp\swisssurface3d_2018_2588-1169_2056_5728.ply
-  src_pc2: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_10_swamp_and_lake\2588_1169_swamp\swisssurface3d_2024_2588-1169_2056_5728.ply
+  src_pc1: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_12_filtering\test_planarity\swisssurface3d_2018_2588-1169_2056_5728.ply
+  src_pc2: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_12_filtering\test_planarity\swisssurface3d_2024_2588-1169_2056_5728.ply
   src_res: default
   res_suffixe: test
 args:
   method: pointtoplane  # choose between pointtopoint and pointtoplane
   pointtoplane_radius: 1.0
   pointtoplane_max_nn: 30
-  max_level: 7
-  min_points: 3000
+  max_level: 6
+  min_points: 500
   huge_translation: [2589500, 1169500, 0]
   # huge_translation: [0,0,0]
   do_output_transformed: False
   output_level: 8 # -1 to output at each level
+
+postprocessing:
+  src_transforms: default

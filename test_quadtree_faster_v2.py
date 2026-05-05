@@ -79,7 +79,8 @@ def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
     """Return indices of points inside bbox. xyz: Nx3 array, indices: subset indices."""
     min_b = bbox.get_min_bound()
     max_b = bbox.get_max_bound()
-    span = max_b - min_b
+    span = np.max([max_b - min_b, np.ones(min_b.shape) * 1000/2**5], axis=0)
+    # span = max_b - min_b
     min_b_w_neigh = min_b - span
     max_b_w_neigh = max_b + span
 
@@ -161,6 +162,23 @@ def extract_subcloud(pc, indices):
     return sub_pc
 
 
+def compute_planarity(points):
+    """
+    Returns planarity in [0, 1]. Close to 1 = flat plane. Close to 0 = complex geometry.
+    Based on eigenvalues of the covariance matrix.
+    """
+    if len(points) < 3:
+        return 1.0
+    
+    cov = np.cov(points.T)
+    eigenvalues = np.sort(np.linalg.eigvalsh(cov))  # ascending: e0 <= e1 <= e2
+    e0, e1, e2 = eigenvalues
+
+    total = e0 + e1 + e2 + 1e-10
+    planarity = (e1 - e0) / total  # high when e0 ≈ 0 and e1 ≈ e2
+    return planarity
+
+
 def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, results, time_subclouds_creation, time_icp, time_transform):
     """Traverse tree and run ICP on each node."""
     
@@ -212,7 +230,7 @@ def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, result
         estimation_method=method
     )
     time_icp.append(time() - time_icp0)
-
+    node.planariy = compute_planarity(np.array(tgt_sub.points))
     new_transform = np.linalg.matmul(transform, reg.transformation)
     node.fitness = reg.fitness
     node.inlier_rmse = reg.inlier_rmse
@@ -226,6 +244,7 @@ def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, result
 
     for child in node.children:
         run_icp_on_tree(child, pc_source, pc_target, src_res, args, new_transform, results, time_subclouds_creation, time_icp, time_transform)
+
 
 
 if __name__ == "__main__":

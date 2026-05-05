@@ -16,6 +16,7 @@ class QuadNode:
         self.level = level
         self.fitness = -1
         self.inlier_rmse = -1
+        self.planarity = -1
         self.transform = np.zeros((4,4))
         self.metrics = {}
         self.size = np.min([len(indices_src), len(indices_tgt)])
