@@ -7,6 +7,7 @@ import pickle
 from omegaconf import OmegaConf
 from plyfile import PlyData
 from src.quadnode import QuadNode
+from postprocessing import postprocessing
 
 
 def read_pc(src_pc):
@@ -176,6 +177,7 @@ def compute_planarity(points):
 
     total = e0 + e1 + e2 + 1e-10
     planarity = (e1 - e0) / total  # high when e0 ≈ 0 and e1 ≈ e2
+
     return planarity
 
 
@@ -230,12 +232,13 @@ def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, result
         estimation_method=method
     )
     time_icp.append(time() - time_icp0)
-    node.planariy = compute_planarity(np.array(tgt_sub.points))
+    node.planarity = compute_planarity(np.array(tgt_sub.points))
     new_transform = np.linalg.matmul(transform, reg.transformation)
     node.fitness = reg.fitness
     node.inlier_rmse = reg.inlier_rmse
     node.transform = new_transform
 
+    # Erase indices for storage
     node.indices_src = None
     node.indices_with_neigh = None
     node.indices_sub_pts = None
@@ -244,7 +247,6 @@ def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, result
 
     for child in node.children:
         run_icp_on_tree(child, pc_source, pc_target, src_res, args, new_transform, results, time_subclouds_creation, time_icp, time_transform)
-
 
 
 if __name__ == "__main__":
@@ -329,3 +331,10 @@ if __name__ == "__main__":
     print("\t time_subclouds_creation:", np.sum(time_subclouds_creation))
     print("\t time_icp:", np.sum(time_icp))
     print("\t time_transform:", np.sum(time_transform))
+
+    if conf.args.do_postprocessing:
+        print("Postprocessing...")
+
+        postprocessing(src_result_transforms)
+
+        print("Done")

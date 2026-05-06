@@ -9,6 +9,7 @@ class QuadNode:
             "max_bound": bbox.get_max_bound().tolist()
         }
         self.bbox = bbox_dict
+        self.center = (bbox.get_min_bound() + bbox.get_max_bound()) / 2
         self.indices_src = indices_src
         self.indices_with_neigh = indices_with_neigh
         self.indices_sub_pts = indices_sub_pts
@@ -24,3 +25,10 @@ class QuadNode:
         self.children = []
         self.is_leaf = True
         self.is_absurd = False
+
+    def __len__(self):
+        counter = len(self.children)
+        for child in self.children:
+            counter += len(child)
+        return counter
+

@@ -7,6 +7,7 @@ from shapely.geometry import Point, Polygon
 import pandas as pd
 from omegaconf import OmegaConf
 from src.quadnode import QuadNode
+from src.coherence import compute_spatial_coherence, compute_magnitude_zscore, compute_rotation_angles, compute_confidence
 
 
 def compute_translation(bbox_dict, transform):
@@ -37,11 +38,12 @@ def trim_branch(node):
     node.children = []
     
 
-def detect_absurds(node):
+def detect_absurds(node, absurd_th):
     counter = 0
+    tot = 0
     norm, direction = compute_translation(node.bbox, node.transform)
     node.metrics['translation_direction'] = direction
-    node.metrics['translation_norm'] = norm
+    node.metrics['Disp3D'] = norm
     diff = 0
 
     if node.level > 0:
@@ -49,12 +51,12 @@ def detect_absurds(node):
         parent_norm, _ = compute_translation(parent.bbox, parent.transform)
         diff = abs(parent_norm - norm)
 
-    if diff > 10:
+    if diff > absurd_th:
         counter += 1
         for child in node.children:
             trim_branch(child)
         node.metrics['translation_direction'] = parent.metrics['translation_direction']
-        node.metrics['translation_norm'] = parent.metrics['translation_norm']
+        node.metrics['Disp3D'] = parent.metrics['Disp3D']
         node.is_absurd = True
         node.is_leaf = True
         for child in node.children:
@@ -62,7 +64,7 @@ def detect_absurds(node):
         node.children = []
 
     for child in node.children:
-        counter += detect_absurds(child)
+        counter += detect_absurds(child, absurd_th)
     return counter
 
 
@@ -147,13 +149,18 @@ def compute_data_for_gpkg(node, data, bbox_data, offset):
         xmin, ymin, zmin = bbox_dict['min_bound']
         xmax, ymax, zmax = bbox_dict['max_bound']
         center = np.vstack([np.array([xmax + xmin, ymax + ymin, zmax + zmin]).reshape((3,1)) / 2, np.array([1])])
-
+        
         data.append(
             (center[0][0] + offset[0], center[1][0] + offset[1], center[2][0] + offset[2], 
-            node.metrics['translation_norm'], 
+            node.metrics['Disp3D'], 
             node.metrics['translation_direction'][0][0], 
             node.metrics['translation_direction'][1][0], 
             node.fitness, node.inlier_rmse, node.planarity,
+            node.metrics['spatial_coherence'],
+            node.metrics['magnitude_zscore'],
+            node.metrics['rotation_angle'],
+            node.metrics['confidence'],
+            node.metrics['is_artifact'],
             node.level, node.is_leaf, node.is_absurd))
 
         for child in node.children:
@@ -171,38 +178,27 @@ def compute_data_for_gpkg(node, data, bbox_data, offset):
 
             data.append(
                 (center[0][0] + offset[0], center[1][0] + offset[1], center[2][0] + offset[2], 
-                el.metrics['translation_norm'], 
+                el.metrics['Disp3D'], 
                 el.metrics['translation_direction'][0][0], 
                 el.metrics['translation_direction'][1][0], 
                 el.fitness, el.inlier_rmse, el.planarity,
+                el.metrics['spatial_coherence'],
+                el.metrics['magnitude_zscore'],
+                el.metrics['rotation_angle'],
+                el.metrics['confidence'],
+                el.metrics['is_artifact'],
                 el.level, el.is_leaf, el.is_absurd))
     else:
         raise ValueError("The node need to be a list of Quadtree nodes or the root of a Quadtree")
 
 
-def tree_to_list(node, list_nodes):
-    if node.level > len(list_nodes) - 1:
-        list_nodes.append([])
-    list_nodes[node.level].append(node)
+def tree_to_list(node, list_tot, list_per_level):
+    list_tot.append(node)
+    if node.level > len(list_per_level) - 1:
+        list_per_level.append([])
+    list_per_level[node.level].append(node)
     for child in node.children:
-        tree_to_list(child, list_nodes)
-
-
-def compute_planarity(points):
-    """
-    Returns planarity in [0, 1]. Close to 1 = flat plane. Close to 0 = complex geometry.
-    Based on eigenvalues of the covariance matrix.
-    """
-    if len(points) < 3:
-        return 1.0
-    
-    cov = np.cov(points.T)
-    eigenvalues = np.sort(np.linalg.eigvalsh(cov))  # ascending: e0 <= e1 <= e2
-    e0, e1, e2 = eigenvalues
-
-    total = e0 + e1 + e2 + 1e-10
-    planarity = (e1 - e0) / total  # high when e0 ≈ 0 and e1 ≈ e2
-    return planarity
+        tree_to_list(child, list_tot, list_per_level)
 
 
 def postprocessing(src_transforms, verbose=False):
@@ -219,19 +215,55 @@ def postprocessing(src_transforms, verbose=False):
     
     offset = np.loadtxt(src_offset, delimiter=',')
 
-    counter = detect_absurds(root)
 
-    print("Number of absurd values: ", counter)
+    # Detect absurd values
+    original_len = len(root)
+    counter = detect_absurds(root, 5)
+    print(f"Number of absurd values: {counter} ({np.round(counter/original_len*100, 2)}%)")
+
+    list_nodes, list_nodes_per_level = [], []
+    tree_to_list(root, list_nodes, list_nodes_per_level)
+    # list_leaves = [x for x in list_nodes if x.is_leaf]
 
     with open(src_out_absurds, 'wb') as f:
         pickle.dump(root, f)
 
+    # Compute coherence indexes
+    translation_x = [node.metrics['translation_direction'][0][0] for node in list_nodes]
+    translation_y = [node.metrics['translation_direction'][1][0] for node in list_nodes]
+    displacement = [node.metrics['Disp3D'] for node in list_nodes]
+    planarity = [node.planarity for node in list_nodes]
+    transforms = [node.transform for node in list_nodes]
+
+    spatial_coherences = compute_spatial_coherence(list_nodes, translation_x, translation_y, 40)
+    magnitude_zscores = compute_magnitude_zscore(list_nodes, displacement, 40)
+    rotation_angles = compute_rotation_angles(transforms)
+
+    mask_artifact = (
+        (np.array(spatial_coherences) < 0.707) |       # direction disagrees with neighbors (> 45°)
+        (np.array(magnitude_zscores) > 2.5) |           # magnitude is outlier among neighbors
+        (np.array(rotation_angles) > 5) |              # large rotation
+        (np.array(planarity) > 0.485)           # flat surface → degenerate ICP
+    )
+    print(f"Number of masked samples: {np.sum(mask_artifact)} ({np.round(np.sum(mask_artifact)/mask_artifact.shape[0]*100, 2)}%)")
+
+    for node, coherence, magnitude, rotation, artifact in zip(list_nodes, spatial_coherences, magnitude_zscores, rotation_angles, mask_artifact):
+        node.metrics['spatial_coherence'] = coherence
+        node.metrics['magnitude_zscore'] = magnitude
+        node.metrics['rotation_angle'] = rotation
+        node.metrics['confidence'] = compute_confidence(coherence, magnitude, rotation, node.planarity, node.fitness, node.inlier_rmse, 
+                                                        w_fitness=0, w_rmse=0)
+        node.metrics['is_artifact'] = bool(artifact)
+
+    # Gather data for GPKG
     data = []
     bbox_data = []
 
     compute_data_for_gpkg(root, data, bbox_data, offset)
 
-    columns = ['x', 'y', 'z', 'Disp3D', 'translation_x', 'translation_y', 'fitness', 'inlier_rmse', 'planarity', 'lvl', 'is_leaf', 'absurd_status']
+    columns = ['x', 'y', 'z', 'Disp3D', 'translation_x', 'translation_y', 'fitness', 'inlier_rmse', 
+               'planarity', 'spatial_coherence', 'magnitude_zscore', 'rotation_angle', 'confidence',
+               'is_artifact', 'lvl', 'is_leaf', 'absurd_status']
 
     # Export all tiles
     export_points_and_bboxes(
@@ -256,17 +288,14 @@ def postprocessing(src_transforms, verbose=False):
     )
 
     # Layer by layer
-    list_lvls = []
-    tree_to_list(root, list_lvls)
-    for lvl in range(len(list_lvls)):
+    for lvl in range(len(list_nodes_per_level)):
         if verbose:
-            print("level: ", lvl, ' - num subtiles: ', len(list_lvls[lvl]))
+            print("level: ", lvl, ' - num subtiles: ', len(list_nodes_per_level[lvl]))
 
         data = []
         bbox_data = [] 
-        compute_data_for_gpkg(list_lvls[lvl], data, bbox_data, offset)
+        compute_data_for_gpkg(list_nodes_per_level[lvl], data, bbox_data, offset)
 
-        # Export all tiles
         export_bboxes(
             data=data,
             bbox_data=bbox_data,
