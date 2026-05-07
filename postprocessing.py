@@ -8,6 +8,7 @@ import pandas as pd
 from omegaconf import OmegaConf
 from src.quadnode import QuadNode
 from src.coherence import compute_spatial_coherence, compute_magnitude_zscore, compute_rotation_angles, compute_confidence
+from copy import deepcopy
 
 
 def compute_translation(bbox_dict, transform):
@@ -17,7 +18,7 @@ def compute_translation(bbox_dict, transform):
     translated = np.linalg.matmul(transform, center)
     norm = float(np.linalg.norm(translated - center))
     norm2d = float(np.linalg.norm(translated[0:2] - center[0:2]))
-    direction = (translated[0:2] - center[0:2]) / norm2d 
+    direction = ((translated[0:2] - center[0:2]) / norm2d).squeeze(-1)
 
     return norm, direction
 
@@ -40,9 +41,9 @@ def trim_branch(node):
 
 def detect_absurds(node, absurd_th):
     counter = 0
-    tot = 0
     norm, direction = compute_translation(node.bbox, node.transform)
-    node.metrics['translation_direction'] = direction
+    node.metrics['translation_x'] = direction[0]
+    node.metrics['translation_y'] = direction[1]
     node.metrics['Disp3D'] = norm
     diff = 0
 
@@ -55,7 +56,8 @@ def detect_absurds(node, absurd_th):
         counter += 1
         for child in node.children:
             trim_branch(child)
-        node.metrics['translation_direction'] = parent.metrics['translation_direction']
+        node.metrics['translation_x'] = parent.metrics['translation_x']
+        node.metrics['translation_y'] = parent.metrics['translation_y']
         node.metrics['Disp3D'] = parent.metrics['Disp3D']
         node.is_absurd = True
         node.is_leaf = True
@@ -139,29 +141,36 @@ def export_points_and_bboxes(data, columns, bbox_data, output_path, offset, crs=
     gdf_bboxes.to_file(output_path, layer="tiles", driver="GPKG")  # append to same file
 
 
+def node_to_list(node, offset=(0,0,0)):
+    attributes_name = []
+    attributes_val = []
+    for key, val in vars(node).items():
+        if key in ['children', 'parent'] or 'indices' in key:
+            continue
+        if key == "center":
+            attributes_name.append(key)
+            attributes_val.append(val)
+            for keyc, valc, of in zip(['x', 'y', 'z'], val, offset):
+                attributes_name.append(keyc)
+                attributes_val.append(valc + of)
+        elif key == 'metrics':
+            for mkey, mval in val.items():
+                if isinstance(mval, np.ndarray):
+                    mval = list(mval)
+                attributes_name.append(mkey)
+                attributes_val.append(mval)
+        else:
+            attributes_name.append(key)
+            attributes_val.append(val)
+    return attributes_name, attributes_val
+
+
 def compute_data_for_gpkg(node, data, bbox_data, offset):
     if isinstance(node, QuadNode):
         # compute translation
         bbox_dict = node.bbox
         bbox_data.append(bbox_dict)
-
-        # position:
-        xmin, ymin, zmin = bbox_dict['min_bound']
-        xmax, ymax, zmax = bbox_dict['max_bound']
-        center = np.vstack([np.array([xmax + xmin, ymax + ymin, zmax + zmin]).reshape((3,1)) / 2, np.array([1])])
-        
-        data.append(
-            (center[0][0] + offset[0], center[1][0] + offset[1], center[2][0] + offset[2], 
-            node.metrics['Disp3D'], 
-            node.metrics['translation_direction'][0][0], 
-            node.metrics['translation_direction'][1][0], 
-            node.fitness, node.inlier_rmse, node.planarity,
-            node.metrics['spatial_coherence'],
-            node.metrics['magnitude_zscore'],
-            node.metrics['rotation_angle'],
-            node.metrics['confidence'],
-            node.metrics['is_artifact'],
-            node.level, node.is_leaf, node.is_absurd))
+        data.append(node_to_list(node, offset)[1])
 
         for child in node.children:
             compute_data_for_gpkg(child, data, bbox_data, offset)
@@ -170,24 +179,7 @@ def compute_data_for_gpkg(node, data, bbox_data, offset):
             # compute translation
             bbox_dict = el.bbox
             bbox_data.append(bbox_dict)
-
-            # position:
-            xmin, ymin, zmin = bbox_dict['min_bound']
-            xmax, ymax, zmax = bbox_dict['max_bound']
-            center = np.vstack([np.array([xmax + xmin, ymax + ymin, zmax + zmin]).reshape((3,1)) / 2, np.array([1])])
-
-            data.append(
-                (center[0][0] + offset[0], center[1][0] + offset[1], center[2][0] + offset[2], 
-                el.metrics['Disp3D'], 
-                el.metrics['translation_direction'][0][0], 
-                el.metrics['translation_direction'][1][0], 
-                el.fitness, el.inlier_rmse, el.planarity,
-                el.metrics['spatial_coherence'],
-                el.metrics['magnitude_zscore'],
-                el.metrics['rotation_angle'],
-                el.metrics['confidence'],
-                el.metrics['is_artifact'],
-                el.level, el.is_leaf, el.is_absurd))
+            data.append(node_to_list(el, offset)[1])
     else:
         raise ValueError("The node need to be a list of Quadtree nodes or the root of a Quadtree")
 
@@ -212,10 +204,10 @@ def postprocessing(src_transforms, verbose=False):
 
     with open(src_transforms, 'rb') as f:
         root = pickle.load(f)
-    
+    root_original = deepcopy(root)
     offset = np.loadtxt(src_offset, delimiter=',')
 
-
+    # Compute 
     # Detect absurd values
     original_len = len(root)
     counter = detect_absurds(root, 5)
@@ -229,8 +221,8 @@ def postprocessing(src_transforms, verbose=False):
         pickle.dump(root, f)
 
     # Compute coherence indexes
-    translation_x = [node.metrics['translation_direction'][0][0] for node in list_nodes]
-    translation_y = [node.metrics['translation_direction'][1][0] for node in list_nodes]
+    translation_x = [node.metrics['translation_x'] for node in list_nodes]
+    translation_y = [node.metrics['translation_y'] for node in list_nodes]
     displacement = [node.metrics['Disp3D'] for node in list_nodes]
     planarity = [node.planarity for node in list_nodes]
     transforms = [node.transform for node in list_nodes]
@@ -258,12 +250,9 @@ def postprocessing(src_transforms, verbose=False):
     # Gather data for GPKG
     data = []
     bbox_data = []
-
     compute_data_for_gpkg(root, data, bbox_data, offset)
 
-    columns = ['x', 'y', 'z', 'Disp3D', 'translation_x', 'translation_y', 'fitness', 'inlier_rmse', 
-               'planarity', 'spatial_coherence', 'magnitude_zscore', 'rotation_angle', 'confidence',
-               'is_artifact', 'lvl', 'is_leaf', 'absurd_status']
+    columns = node_to_list(root)[0]
 
     # Export all tiles
     export_points_and_bboxes(
@@ -275,8 +264,8 @@ def postprocessing(src_transforms, verbose=False):
     )
 
     # Export only leaves
+    data_leaves = [x for x in data if x[-2] == True]
     mask_leaves = np.array([x[-2] for x in data], dtype=np.bool)
-    data_leaves = list(np.array(data)[mask_leaves])
     bbox_data_leaves = list(np.array(bbox_data)[mask_leaves])
 
     export_points_and_bboxes(
@@ -286,6 +275,13 @@ def postprocessing(src_transforms, verbose=False):
         output_path=src_out_gpkg_leaves,
         offset=offset,
     )
+
+    # list_nodes, list_nodes_per_level = [], []
+    # tree_to_list(root_original, list_nodes, list_nodes_per_level)
+    # data = []
+    # bbox_data = []
+    # compute_data_for_gpkg(root_original, data, bbox_data, offset)
+    # columns = node_to_list(root_original)[0]
 
     # Layer by layer
     for lvl in range(len(list_nodes_per_level)):

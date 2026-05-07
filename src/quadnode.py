@@ -31,4 +31,5 @@ class QuadNode:
         for child in self.children:
             counter += len(child)
         return counter
+    
 

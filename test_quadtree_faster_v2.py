@@ -76,17 +76,58 @@ def compute_bbox(boundaries):
     return bboxes
 
 
-def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
+# def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
+#     """Return indices of points inside bbox. xyz: Nx3 array, indices: subset indices."""
+#     min_b = bbox.get_min_bound()
+#     max_b = bbox.get_max_bound()
+#     # span = np.max([max_b - min_b, np.ones(min_b.shape) * 1000/2**5], axis=0)
+#     span = max_b[0] - min_b[0]
+#     min_b_w_neigh = min_b - span
+#     max_b_w_neigh = max_b + span
+
+#     pts_src = xyz_src[indices_src]
+#     pts_parent = xyz_src[parent.indices_src] if parent != None else xyz_src
+#     pts_tgt = xyz_tgt[indices_tgt]
+
+#     # compute points in source
+#     mask = (
+#         (pts_src[:, 0] >= min_b[0]) & (pts_src[:, 0] < max_b[0]) &
+#         (pts_src[:, 1] >= min_b[1]) & (pts_src[:, 1] < max_b[1])
+#     )
+
+#     mask_w_neigh = (
+#         (pts_parent[:, 0] >= min_b_w_neigh[0]) & (pts_parent[:, 0] < max_b_w_neigh[0]) &
+#         (pts_parent[:, 1] >= min_b_w_neigh[1]) & (pts_parent[:, 1] < max_b_w_neigh[1])
+#     )
+
+#     sub_pts_src = pts_parent[mask_w_neigh]
+#     indices_sub = np.arange(len(sub_pts_src))
+#     mask_sub = (
+#         (sub_pts_src[:, 0] >= min_b[0]) & (sub_pts_src[:, 0] < max_b[0]) &
+#         (sub_pts_src[:, 1] >= min_b[1]) & (sub_pts_src[:, 1] < max_b[1])
+#     )
+
+#     # compute points in target
+#     mask_tgt = (
+#         (pts_tgt[:, 0] >= min_b[0]) & (pts_tgt[:, 0] < max_b[0]) &
+#         (pts_tgt[:, 1] >= min_b[1]) & (pts_tgt[:, 1] < max_b[1])
+#     )
+
+#     indices_w_neigh = parent.indices_src[mask_w_neigh] if parent != None else np.arange(len(xyz_src))[mask_w_neigh]
+
+#     return indices_src[mask], indices_tgt[mask_tgt], indices_w_neigh, indices_sub[mask_sub]
+
+def points_in_bbox(xyz_src, xyz_tgt, node, bbox, indices_src, indices_tgt):
     """Return indices of points inside bbox. xyz: Nx3 array, indices: subset indices."""
     min_b = bbox.get_min_bound()
     max_b = bbox.get_max_bound()
-    span = np.max([max_b - min_b, np.ones(min_b.shape) * 1000/2**5], axis=0)
-    # span = max_b - min_b
+    # span = np.max([max_b - min_b, np.ones(min_b.shape) * 1000/2**5], axis=0)
+    span = max_b[0] - min_b[0]
     min_b_w_neigh = min_b - span
     max_b_w_neigh = max_b + span
 
     pts_src = xyz_src[indices_src]
-    pts_parent = xyz_src[parent.indices_src] if parent != None else xyz_src
+    pts_gd_parent = xyz_src[node.parent.parent.indices_src] if node.level > 1 else xyz_src
     pts_tgt = xyz_tgt[indices_tgt]
 
     # compute points in source
@@ -96,11 +137,11 @@ def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
     )
 
     mask_w_neigh = (
-        (pts_parent[:, 0] >= min_b_w_neigh[0]) & (pts_parent[:, 0] < max_b_w_neigh[0]) &
-        (pts_parent[:, 1] >= min_b_w_neigh[1]) & (pts_parent[:, 1] < max_b_w_neigh[1])
+        (pts_gd_parent[:, 0] >= min_b_w_neigh[0]) & (pts_gd_parent[:, 0] < max_b_w_neigh[0]) &
+        (pts_gd_parent[:, 1] >= min_b_w_neigh[1]) & (pts_gd_parent[:, 1] < max_b_w_neigh[1])
     )
 
-    sub_pts_src = pts_parent[mask_w_neigh]
+    sub_pts_src = pts_gd_parent[mask_w_neigh]
     indices_sub = np.arange(len(sub_pts_src))
     mask_sub = (
         (sub_pts_src[:, 0] >= min_b[0]) & (sub_pts_src[:, 0] < max_b[0]) &
@@ -113,7 +154,7 @@ def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
         (pts_tgt[:, 1] >= min_b[1]) & (pts_tgt[:, 1] < max_b[1])
     )
 
-    indices_w_neigh = parent.indices_src[mask_w_neigh] if parent != None else np.arange(len(xyz_src))[mask_w_neigh]
+    indices_w_neigh = node.parent.parent.indices_src[mask_w_neigh] if node.level > 1 else np.arange(len(xyz_src))[mask_w_neigh]
 
     return indices_src[mask], indices_tgt[mask_tgt], indices_w_neigh, indices_sub[mask_sub]
 
@@ -130,7 +171,7 @@ def build_quadtree(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt, ind
     sub_bboxes = compute_bbox(bbox)
 
     for subbbox in sub_bboxes:
-        sub_idx_src, sub_idx_tgt, sub_idx_with_neigh, sub_idx_sub_pts = points_in_bbox(xyz_src, xyz_tgt, parent, subbbox, indices_src, indices_tgt)
+        sub_idx_src, sub_idx_tgt, sub_idx_with_neigh, sub_idx_sub_pts = points_in_bbox(xyz_src, xyz_tgt, node, subbbox, indices_src, indices_tgt)
 
         if len(sub_idx_src) == 0 or len(sub_idx_tgt) == 0:
             continue
@@ -209,7 +250,7 @@ def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, result
     if args.do_output_transformed and args.output_level in [-1, node.level]:
         src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_target.ply')
         o3d.io.write_point_cloud(src_file, tgt_sub)
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_transformed.ply')
+        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_pretransformed.ply')
         o3d.io.write_point_cloud(src_file, src_sub_w_neigh)
 
     # choose method
@@ -231,6 +272,15 @@ def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, result
         init=np.eye(4),
         estimation_method=method
     )
+
+    # save transformed tile if wanted:
+    if args.do_output_transformed and args.output_level in [-1, node.level]:
+        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_pretransformed_crop.ply')
+        o3d.io.write_point_cloud(src_file, src_sub)
+        src_sub.transform(reg.transformation)
+        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_transformed_crop.ply')
+        o3d.io.write_point_cloud(src_file, src_sub)
+
     time_icp.append(time() - time_icp0)
     node.planarity = compute_planarity(np.array(tgt_sub.points))
     new_transform = np.linalg.matmul(transform, reg.transformation)
