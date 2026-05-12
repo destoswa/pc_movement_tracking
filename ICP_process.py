@@ -7,7 +7,7 @@ import pickle
 from omegaconf import OmegaConf
 from plyfile import PlyData
 from src.quadnode import QuadNode
-from postprocessing import postprocessing
+from postprocessing import postprocessing, remove_A0
 
 
 def read_pc(src_pc):
@@ -59,6 +59,24 @@ def read_ply_with_scalars(ply_path):
     return pc, scalars
 
 
+def compute_planarity(points):
+    """
+    Returns planarity in [0, 1]. Close to 1 = flat plane. Close to 0 = complex geometry.
+    Based on eigenvalues of the covariance matrix.
+    """
+    if len(points) < 3:
+        return 1.0
+    
+    cov = np.cov(points.T)
+    eigenvalues = np.sort(np.linalg.eigvalsh(cov))  # ascending: e0 <= e1 <= e2
+    e0, e1, e2 = eigenvalues
+
+    total = e0 + e1 + e2 + 1e-10
+    planarity = (e1 - e0) / total  # high when e0 ≈ 0 and e1 ≈ e2
+
+    return planarity
+
+
 def compute_bbox(boundaries):
     min_bound, max_bound = boundaries.get_min_bound(), boundaries.get_max_bound()
     minx, miny, minz = min_bound
@@ -76,7 +94,7 @@ def compute_bbox(boundaries):
     return bboxes
 
 
-# def points_in_bbox(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt):
+# def points_in_bbox(xyz_src, xyz_tgt, node, bbox, indices_src, indices_tgt):
 #     """Return indices of points inside bbox. xyz: Nx3 array, indices: subset indices."""
 #     min_b = bbox.get_min_bound()
 #     max_b = bbox.get_max_bound()
@@ -86,7 +104,7 @@ def compute_bbox(boundaries):
 #     max_b_w_neigh = max_b + span
 
 #     pts_src = xyz_src[indices_src]
-#     pts_parent = xyz_src[parent.indices_src] if parent != None else xyz_src
+#     pts_gd_parent = xyz_src[node.parent.parent.indices_src] if node.level > 1 else xyz_src
 #     pts_tgt = xyz_tgt[indices_tgt]
 
 #     # compute points in source
@@ -96,11 +114,11 @@ def compute_bbox(boundaries):
 #     )
 
 #     mask_w_neigh = (
-#         (pts_parent[:, 0] >= min_b_w_neigh[0]) & (pts_parent[:, 0] < max_b_w_neigh[0]) &
-#         (pts_parent[:, 1] >= min_b_w_neigh[1]) & (pts_parent[:, 1] < max_b_w_neigh[1])
+#         (pts_gd_parent[:, 0] >= min_b_w_neigh[0]) & (pts_gd_parent[:, 0] < max_b_w_neigh[0]) &
+#         (pts_gd_parent[:, 1] >= min_b_w_neigh[1]) & (pts_gd_parent[:, 1] < max_b_w_neigh[1])
 #     )
 
-#     sub_pts_src = pts_parent[mask_w_neigh]
+#     sub_pts_src = pts_gd_parent[mask_w_neigh]
 #     indices_sub = np.arange(len(sub_pts_src))
 #     mask_sub = (
 #         (sub_pts_src[:, 0] >= min_b[0]) & (sub_pts_src[:, 0] < max_b[0]) &
@@ -113,77 +131,67 @@ def compute_bbox(boundaries):
 #         (pts_tgt[:, 1] >= min_b[1]) & (pts_tgt[:, 1] < max_b[1])
 #     )
 
-#     indices_w_neigh = parent.indices_src[mask_w_neigh] if parent != None else np.arange(len(xyz_src))[mask_w_neigh]
+#     indices_w_neigh = node.parent.parent.indices_src[mask_w_neigh] if node.level > 1 else np.arange(len(xyz_src))[mask_w_neigh]
 
 #     return indices_src[mask], indices_tgt[mask_tgt], indices_w_neigh, indices_sub[mask_sub]
 
-def points_in_bbox(xyz_src, xyz_tgt, node, bbox, indices_src, indices_tgt):
+
+def points_in_bbox(xyz_src, xyz_tgt, node, bbox):
     """Return indices of points inside bbox. xyz: Nx3 array, indices: subset indices."""
     min_b = bbox.get_min_bound()
     max_b = bbox.get_max_bound()
-    # span = np.max([max_b - min_b, np.ones(min_b.shape) * 1000/2**5], axis=0)
+    # span = np.max([max_b - min_b, np.ones(min_b.shape) * 1000/2**5], axis=0)[0]
     span = max_b[0] - min_b[0]
     min_b_w_neigh = min_b - span
     max_b_w_neigh = max_b + span
 
-    pts_src = xyz_src[indices_src]
-    pts_gd_parent = xyz_src[node.parent.parent.indices_src] if node.level > 1 else xyz_src
-    pts_tgt = xyz_tgt[indices_tgt]
+    pts_src = xyz_src[node.indices_src]
+    node.planarity = compute_planarity(pts_src)
+    pts_tgt = xyz_tgt[node.indices_tgt] if node.level > 0 else xyz_tgt
 
     # compute points in source
-    mask = (
+    mask_src = (
         (pts_src[:, 0] >= min_b[0]) & (pts_src[:, 0] < max_b[0]) &
         (pts_src[:, 1] >= min_b[1]) & (pts_src[:, 1] < max_b[1])
     )
 
-    mask_w_neigh = (
-        (pts_gd_parent[:, 0] >= min_b_w_neigh[0]) & (pts_gd_parent[:, 0] < max_b_w_neigh[0]) &
-        (pts_gd_parent[:, 1] >= min_b_w_neigh[1]) & (pts_gd_parent[:, 1] < max_b_w_neigh[1])
-    )
-
-    sub_pts_src = pts_gd_parent[mask_w_neigh]
-    indices_sub = np.arange(len(sub_pts_src))
-    mask_sub = (
-        (sub_pts_src[:, 0] >= min_b[0]) & (sub_pts_src[:, 0] < max_b[0]) &
-        (sub_pts_src[:, 1] >= min_b[1]) & (sub_pts_src[:, 1] < max_b[1])
-    )
-
-    # compute points in target
     mask_tgt = (
-        (pts_tgt[:, 0] >= min_b[0]) & (pts_tgt[:, 0] < max_b[0]) &
-        (pts_tgt[:, 1] >= min_b[1]) & (pts_tgt[:, 1] < max_b[1])
+        (pts_tgt[:, 0] >= min_b_w_neigh[0]) & (pts_tgt[:, 0] < max_b_w_neigh[0]) &
+        (pts_tgt[:, 1] >= min_b_w_neigh[1]) & (pts_tgt[:, 1] < max_b_w_neigh[1])
     )
 
-    indices_w_neigh = node.parent.parent.indices_src[mask_w_neigh] if node.level > 1 else np.arange(len(xyz_src))[mask_w_neigh]
-
-    return indices_src[mask], indices_tgt[mask_tgt], indices_w_neigh, indices_sub[mask_sub]
+    return node.indices_src[mask_src], node.indices_tgt[mask_tgt]
 
 
-def build_quadtree(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt, indices_with_neigh, indices_sub_pts, level, max_level, min_points):
+def build_quadtree(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt, level, min_tile_size, min_points):
     """Recursively build quadtree based on point density."""
 
-    node = QuadNode(bbox, indices_src, indices_tgt, indices_with_neigh, indices_sub_pts, level, parent)
-
+    node = QuadNode(bbox, indices_src, indices_tgt, level, parent)
+    
     # stopping condition
-    if level >= max_level or len(indices_src) <= min_points or len(indices_tgt) <= min_points:
+    tile_size = np.min((bbox.get_max_bound() - bbox.get_min_bound())[0:2])
+    tile_len = np.min([len(indices_src), len(indices_tgt)])
+    if tile_len <= min_points:
         return node
 
     sub_bboxes = compute_bbox(bbox)
 
-    for subbbox in sub_bboxes:
-        sub_idx_src, sub_idx_tgt, sub_idx_with_neigh, sub_idx_sub_pts = points_in_bbox(xyz_src, xyz_tgt, node, subbbox, indices_src, indices_tgt)
+    tile_size = np.min((sub_bboxes[0].get_max_bound() - sub_bboxes[0].get_min_bound())[0:2])
+    if tile_size > min_tile_size:
+        for subbbox in sub_bboxes:
+            sub_idx_src, sub_idx_tgt = points_in_bbox(xyz_src, xyz_tgt, node, subbbox)
 
-        if len(sub_idx_src) == 0 or len(sub_idx_tgt) == 0:
-            continue
+            if len(sub_idx_src) == 0 or len(sub_idx_tgt) == 0:
+                continue
 
-        child = build_quadtree(
-            xyz_src, xyz_tgt, node, subbbox, sub_idx_src, sub_idx_tgt, sub_idx_with_neigh, sub_idx_sub_pts,
-            level + 1, max_level, min_points
-        )
-        node.children.append(child)
+            child = build_quadtree(
+                xyz_src, xyz_tgt, node, subbbox, sub_idx_src, sub_idx_tgt,
+                level + 1, min_tile_size, min_points,
+            )
+            node.children.append(child)
 
-    if node.children:
-        node.is_leaf = False
+        if node.children:
+            node.is_leaf = False
 
     return node
 
@@ -204,54 +212,98 @@ def extract_subcloud(pc, indices):
     return sub_pc
 
 
-def compute_planarity(points):
-    """
-    Returns planarity in [0, 1]. Close to 1 = flat plane. Close to 0 = complex geometry.
-    Based on eigenvalues of the covariance matrix.
-    """
-    if len(points) < 3:
-        return 1.0
+# def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, results, time_subclouds_creation, time_icp, time_transform):
+#     """Traverse tree and run ICP on each node."""
     
-    cov = np.cov(points.T)
-    eigenvalues = np.sort(np.linalg.eigvalsh(cov))  # ascending: e0 <= e1 <= e2
-    e0, e1, e2 = eigenvalues
+#     x,y,_ = node.bbox['min_bound']
+#     time_sub_0 = time()
+#     src_sub_w_neigh = extract_subcloud(pc_source, node.indices_with_neigh)
+#     time_subclouds_creation_local = time() - time_sub_0
 
-    total = e0 + e1 + e2 + 1e-10
-    planarity = (e1 - e0) / total  # high when e0 ≈ 0 and e1 ≈ e2
+#     # save transformed tile if wanted:
+#     if args.do_output_transformed and args.output_level in [-1, node.level]:
+#         src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_source.ply')
+#         o3d.io.write_point_cloud(src_file, src_sub_w_neigh)
 
-    return planarity
+#     # transform local sample
+#     time_sub_0 = time()
+#     src_sub_w_neigh.transform(transform)
+#     time_transform.append(time() - time_sub_0)
 
+#     time_sub_0 = time()
+#     src_sub = extract_subcloud(src_sub_w_neigh, node.indices_sub_pts)
+#     tgt_sub = extract_subcloud(pc_target, node.indices_tgt)
+#     time_subclouds_creation_local += time() - time_sub_0
+#     time_subclouds_creation.append(time_subclouds_creation_local)
 
-def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, results, time_subclouds_creation, time_icp, time_transform):
+#     # save transformed tile if wanted:
+#     if args.do_output_transformed and args.output_level in [-1, node.level]:
+#         src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_target.ply')
+#         o3d.io.write_point_cloud(src_file, tgt_sub)
+#         src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_pretransformed.ply')
+#         o3d.io.write_point_cloud(src_file, src_sub_w_neigh)
+
+#     # choose method
+#     method = None
+#     if args.method == 'pointtopoint':
+#         method = o3d.pipelines.registration.TransformationEstimationPointToPoint()
+#     elif args.method == 'pointtoplane':
+#         method = o3d.pipelines.registration.TransformationEstimationPointToPlane()
+#     else:
+#         raise ValueError(f"The given method is wrong!\n\tGiven: {args.method}\n\tAccepted: [pointtopoint, pointtoplane]")
+
+#     # max_correspondence = [0.5, 5, 4, 3, 1.5, 0.4, 0.3, 0.27, 0.25, 0.22, 0.2]
+#     max_correspondence = [0.5, 5, 4, 3, 1.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+#     time_icp0 = time()
+#     reg = o3d.pipelines.registration.registration_icp(
+#         src_sub,
+#         tgt_sub,
+#         max_correspondence_distance=max_correspondence[node.level],
+#         init=np.eye(4),
+#         estimation_method=method
+#     )
+
+#     # save transformed tile if wanted:
+#     if args.do_output_transformed and args.output_level in [-1, node.level]:
+#         src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_pretransformed_crop.ply')
+#         o3d.io.write_point_cloud(src_file, src_sub)
+#         src_sub.transform(reg.transformation)
+#         src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_transformed_crop.ply')
+#         o3d.io.write_point_cloud(src_file, src_sub)
+
+#     time_icp.append(time() - time_icp0)
+#     node.planarity = compute_planarity(np.array(tgt_sub.points))
+#     new_transform = np.linalg.matmul(transform, reg.transformation)
+#     node.fitness = reg.fitness
+#     node.inlier_rmse = reg.inlier_rmse
+#     node.transform = new_transform
+
+#     # Erase indices for storage
+#     node.indices_src = None
+#     node.indices_with_neigh = None
+#     node.indices_sub_pts = None
+#     node.indices_tgt = None
+#     results.append(node)
+
+#     for child in node.children:
+#         run_icp_on_tree(child, pc_source, pc_target, src_res, args, new_transform, results, time_subclouds_creation, time_icp, time_transform)
+
+def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, time_subclouds_creation, time_icp, time_transform):
     """Traverse tree and run ICP on each node."""
     
     x,y,_ = node.bbox['min_bound']
-    time_sub_0 = time()
-    src_sub_w_neigh = extract_subcloud(pc_source, node.indices_with_neigh)
-    time_subclouds_creation_local = time() - time_sub_0
-
-    # save transformed tile if wanted:
-    if args.do_output_transformed and args.output_level in [-1, node.level]:
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_source.ply')
-        o3d.io.write_point_cloud(src_file, src_sub_w_neigh)
-
-    # transform local sample
-    time_sub_0 = time()
-    src_sub_w_neigh.transform(transform)
-    time_transform.append(time() - time_sub_0)
 
     time_sub_0 = time()
-    src_sub = extract_subcloud(src_sub_w_neigh, node.indices_sub_pts)
-    tgt_sub = extract_subcloud(pc_target, node.indices_tgt)
-    time_subclouds_creation_local += time() - time_sub_0
-    time_subclouds_creation.append(time_subclouds_creation_local)
+    pc_tgt = extract_subcloud(pc_target, node.indices_tgt)
+    pc_src = extract_subcloud(pc_source, node.indices_src)
+    time_subclouds_creation.append(time() - time_sub_0)
 
     # save transformed tile if wanted:
     if args.do_output_transformed and args.output_level in [-1, node.level]:
         src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_target.ply')
-        o3d.io.write_point_cloud(src_file, tgt_sub)
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_pretransformed.ply')
-        o3d.io.write_point_cloud(src_file, src_sub_w_neigh)
+        o3d.io.write_point_cloud(src_file, pc_tgt)
+        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_source.ply')
+        o3d.io.write_point_cloud(src_file, pc_src)
 
     # choose method
     method = None
@@ -262,41 +314,42 @@ def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, result
     else:
         raise ValueError(f"The given method is wrong!\n\tGiven: {args.method}\n\tAccepted: [pointtopoint, pointtoplane]")
 
+    pc_src.transform(transform)
     # max_correspondence = [0.5, 5, 4, 3, 1.5, 0.4, 0.3, 0.27, 0.25, 0.22, 0.2]
     max_correspondence = [0.5, 5, 4, 3, 1.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
     time_icp0 = time()
     reg = o3d.pipelines.registration.registration_icp(
-        src_sub,
-        tgt_sub,
+        pc_src,
+        pc_tgt,
         max_correspondence_distance=max_correspondence[node.level],
         init=np.eye(4),
         estimation_method=method
     )
 
-    # save transformed tile if wanted:
-    if args.do_output_transformed and args.output_level in [-1, node.level]:
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_pretransformed_crop.ply')
-        o3d.io.write_point_cloud(src_file, src_sub)
-        src_sub.transform(reg.transformation)
-        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_transformed_crop.ply')
-        o3d.io.write_point_cloud(src_file, src_sub)
-
-    time_icp.append(time() - time_icp0)
-    node.planarity = compute_planarity(np.array(tgt_sub.points))
     new_transform = np.linalg.matmul(transform, reg.transformation)
+    time_icp.append(time() - time_icp0)
     node.fitness = reg.fitness
     node.inlier_rmse = reg.inlier_rmse
-    node.transform = new_transform
+    node.local_transform = reg.transformation
+    node.global_transform = new_transform
+
+    # save transformed tile if wanted:
+    if args.do_output_transformed and args.output_level in [-1, node.level]:
+        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_pretransformed.ply')
+        o3d.io.write_point_cloud(src_file, pc_src)
+        pc_src.transform(reg.transformation)
+        src_file = os.path.join(src_res, f'alligned_pc_lvl={node.level}_x={x}_y={y}_transformed.ply')
+        o3d.io.write_point_cloud(src_file, pc_src)
+
 
     # Erase indices for storage
     node.indices_src = None
     node.indices_with_neigh = None
     node.indices_sub_pts = None
     node.indices_tgt = None
-    results.append(node)
 
     for child in node.children:
-        run_icp_on_tree(child, pc_source, pc_target, src_res, args, new_transform, results, time_subclouds_creation, time_icp, time_transform)
+        run_icp_on_tree(child, pc_source, pc_target, src_res, args, new_transform, time_subclouds_creation, time_icp, time_transform)
 
 
 if __name__ == "__main__":
@@ -352,22 +405,18 @@ if __name__ == "__main__":
         bbox=bbox,
         indices_src=np.arange(len(xyz_src)),
         indices_tgt=np.arange(len(xyz_tgt)),
-        indices_with_neigh=np.arange(len(xyz_src)),
-        indices_sub_pts=np.arange(len(xyz_src)),
         level=0,
-        max_level=conf.args.max_level,
+        min_tile_size=conf.args.min_tile_size,
         min_points=conf.args.min_points,
     )
     time_quadtree_creation = time() - time0
 
     # run ICP
-    results = []
     time_subclouds_creation = []
     time_icp = []
     time_transform = []
 
-    
-    run_icp_on_tree(root, tiles['source'], tiles['target'], pointcloud_res, conf.args, np.eye(4), results, time_subclouds_creation, time_icp, time_transform)
+    run_icp_on_tree(root, tiles['source'], tiles['target'], pointcloud_res, conf.args, np.eye(4), time_subclouds_creation, time_icp, time_transform)
     
     with open(src_result_transforms, 'wb') as f:
         pickle.dump(root, f)
@@ -383,8 +432,14 @@ if __name__ == "__main__":
     print("\t time_transform:", np.sum(time_transform))
 
     if conf.args.do_postprocessing:
-        print("Postprocessing...")
+        src_out_gpkg = os.path.join(os.path.dirname(src_result_transforms), 'points_translate.gpkg')
 
-        postprocessing(src_result_transforms)
+        # Postprocess with A0
+        print("Postprocessing with initial alignment (w_A0)")
+        postprocessing(root, src_out_gpkg, offset, 'w_A0')
 
-        print("Done")
+        # Postprocess without A0:
+        print("Postprocessing without initial alignment (wo_A0)")
+        A0_inv = np.linalg.inv(root.global_transform)
+        remove_A0(root, A0_inv)
+        postprocessing(root, src_out_gpkg, offset, 'wo_A0')

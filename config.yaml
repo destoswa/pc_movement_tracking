@@ -1,19 +1,23 @@
 data:
-  src_pc1: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_12_filtering\test_confidence\2589_1169\swisssurface3d_2018_2589-1169_2056_5728.ply
-  src_pc2: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_12_filtering\test_confidence\2589_1169\swisssurface3d_2024_2589-1169_2056_5728.ply
-  src_res: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_6_neigh_on_target\test_speed_up_to_lvl_6\results
+  # src_pc1: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_12_filtering\test_confidence\2589_1169\swisssurface3d_2018_2589-1169_2056_5728.ply
+  # src_pc2: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_12_filtering\test_confidence\2589_1169\swisssurface3d_2024_2589-1169_2056_5728.ply
+  # src_res: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_14_neigh_on_target_2\results_with_neigh_min
+  src_pc1: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_3_real_movement_artificial_spacing\processed_tiles\2589_1169\PC2015_2589_1169.ply
+  src_pc2: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_3_real_movement_artificial_spacing\processed_tiles\2589_1169\PC2019_2589_1169.ply
+  src_res: D:\GitHubProjects\Terranum_repo\pc_movement_tracking\data\test_3_real_movement_artificial_spacing\processed_tiles\2589_1169\results_new
   res_suffixe: test
 args:
   method: pointtoplane  # choose between pointtopoint and pointtoplane
   pointtoplane_radius: 1.0
   pointtoplane_max_nn: 30
-  max_level: 12
-  min_points: 3000
+  min_tile_size: 15
+  min_points: 2000
   huge_translation: [2589500, 1169500, 0]
   # huge_translation: [0,0,0]
-  do_output_transformed: True
+  do_output_transformed: False
   output_level: -1 # -1 to output at each level
   do_postprocessing: True
 
 postprocessing:
   src_transforms: default
+  absurd_dist: 5
