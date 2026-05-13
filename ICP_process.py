@@ -71,8 +71,8 @@ def compute_planarity(points):
     eigenvalues = np.sort(np.linalg.eigvalsh(cov))  # ascending: e0 <= e1 <= e2
     e0, e1, e2 = eigenvalues
 
-    total = e0 + e1 + e2 + 1e-10
-    planarity = (e1 - e0) / total  # high when e0 ≈ 0 and e1 ≈ e2
+    # total = e0 + e1 + e2 + 1e-10
+    planarity = (e1 - e0) / e2  # high when e0 ≈ 0 and e1 ≈ e2
 
     return planarity
 
@@ -135,7 +135,6 @@ def compute_bbox(boundaries):
 
 #     return indices_src[mask], indices_tgt[mask_tgt], indices_w_neigh, indices_sub[mask_sub]
 
-
 def points_in_bbox(xyz_src, xyz_tgt, node, bbox):
     """Return indices of points inside bbox. xyz: Nx3 array, indices: subset indices."""
     min_b = bbox.get_min_bound()
@@ -146,15 +145,13 @@ def points_in_bbox(xyz_src, xyz_tgt, node, bbox):
     max_b_w_neigh = max_b + span
 
     pts_src = xyz_src[node.indices_src]
-    node.planarity = compute_planarity(pts_src)
-    pts_tgt = xyz_tgt[node.indices_tgt] if node.level > 0 else xyz_tgt
+    pts_tgt = xyz_tgt[node.indices_tgt]
 
     # compute points in source
     mask_src = (
         (pts_src[:, 0] >= min_b[0]) & (pts_src[:, 0] < max_b[0]) &
         (pts_src[:, 1] >= min_b[1]) & (pts_src[:, 1] < max_b[1])
     )
-
     mask_tgt = (
         (pts_tgt[:, 0] >= min_b_w_neigh[0]) & (pts_tgt[:, 0] < max_b_w_neigh[0]) &
         (pts_tgt[:, 1] >= min_b_w_neigh[1]) & (pts_tgt[:, 1] < max_b_w_neigh[1])
@@ -167,7 +164,8 @@ def build_quadtree(xyz_src, xyz_tgt, parent, bbox, indices_src, indices_tgt, lev
     """Recursively build quadtree based on point density."""
 
     node = QuadNode(bbox, indices_src, indices_tgt, level, parent)
-    
+    node.planarity = compute_planarity(xyz_src[indices_src])
+
     # stopping condition
     tile_size = np.min((bbox.get_max_bound() - bbox.get_min_bound())[0:2])
     tile_len = np.min([len(indices_src), len(indices_tgt)])
@@ -317,6 +315,7 @@ def run_icp_on_tree(node, pc_source, pc_target, src_res, args, transform, time_s
     pc_src.transform(transform)
     # max_correspondence = [0.5, 5, 4, 3, 1.5, 0.4, 0.3, 0.27, 0.25, 0.22, 0.2]
     max_correspondence = [0.5, 5, 4, 3, 1.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+    max_correspondence = [0.5, 5, 5,5,5,5,5,5,5,5,5,5,5,5,5]
     time_icp0 = time()
     reg = o3d.pipelines.registration.registration_icp(
         pc_src,
@@ -357,6 +356,13 @@ if __name__ == "__main__":
     if conf.data.src_res == "default":
         conf.data.src_res = os.path.join(os.path.dirname(conf.data.src_pc1), 'results')
     
+    # test if files exist
+    for id_pc, pc in enumerate([conf.data.src_pc1, conf.data.src_pc2]):
+        try:
+            assert os.path.exists(pc)
+        except:
+            raise AttributeError(f"The path given for pc{id_pc} is wrong!")
+
     # prepare results
     os.makedirs(conf.data.src_res, exist_ok=True)
     pointcloud_res = os.path.join(conf.data.src_res, 'pointclouds')
@@ -433,13 +439,15 @@ if __name__ == "__main__":
 
     if conf.args.do_postprocessing:
         src_out_gpkg = os.path.join(os.path.dirname(src_result_transforms), 'points_translate.gpkg')
+        absurd_th = float(conf.postprocessing.absurd_dist)
 
         # Postprocess with A0
-        print("Postprocessing with initial alignment (w_A0)")
-        postprocessing(root, src_out_gpkg, offset, 'w_A0')
+        print("\nPostprocessing with initial alignment (w_A0)")
+        postprocessing(root, src_out_gpkg, offset, absurd_th, 'w_A0')
 
         # Postprocess without A0:
-        print("Postprocessing without initial alignment (wo_A0)")
+        print("\nPostprocessing without initial alignment (wo_A0)")
         A0_inv = np.linalg.inv(root.global_transform)
         remove_A0(root, A0_inv)
-        postprocessing(root, src_out_gpkg, offset, 'wo_A0')
+        postprocessing(root, src_out_gpkg, offset, absurd_th, 'wo_A0')
+        print()

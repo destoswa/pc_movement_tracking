@@ -6,18 +6,12 @@ import json
 import laspy
 import numpy as np
 import open3d as o3d
-
-# try:
-#     ENV = os.environ['CONDA_DEFAULT_ENV']
-#     if ENV == "pdal_env":
-#         import pdal
-# except:
-#     pass
-
+import traceback
+from plyfile import PlyData, PlyElement
 
 class Convertions:
     @staticmethod
-    def convert_laz_to_las(in_laz, out_las, verbose=True):
+    def convert_laz_to_las(in_laz, out_las, verbose=True, **kwargs):
         """
         Converts a LAZ file to an uncompressed LAS file.
 
@@ -37,7 +31,27 @@ class Convertions:
             print(f"LAS file saved in {out_las}")
 
     @staticmethod
-    def convert_pcd_to_laz(in_pcd, out_laz, verbose=True):
+    def convert_las_to_laz(in_las, out_laz, verbose=True, **kwargs):
+        """
+        Converts a LAZ file to an uncompressed LAS file.
+
+        Args:
+            - in_laz (str): Path to the input .laz file.
+            - out_las (str): Path to the output .las file.
+            - verbose (bool, optional): Whether to print confirmation of the saved file. Defaults to True.
+
+        Returns:
+            - None: Saves the converted .las file.
+        """
+
+        las = laspy.read(in_las)
+        las = laspy.convert(las)
+        las.write(out_laz)
+        if verbose:
+            print(f"LAS file saved in {out_laz}")
+
+    @staticmethod
+    def convert_pcd_to_laz(in_pcd, out_laz, verbose=True, **kwargs):
         """
         Converts a PCD file to a compressed LAZ file using PDAL.
 
@@ -76,7 +90,7 @@ class Convertions:
             print(f"LAZ file saved in {out_laz}")
 
     @staticmethod
-    def convert_laz_to_pcd(in_laz, out_pcd, verbose=True):
+    def convert_laz_to_pcd(in_laz, out_pcd, verbose=True, **kwargs):
         """
         Converts a LAZ file to a PCD file, preserving all point attributes.
 
@@ -130,36 +144,132 @@ class Convertions:
             print(f"PCD file saved in {out_pcd}")
 
     @staticmethod
-    def convert_las_to_ply(in_las, out_ply, verbose=True):
-        """
-        Convert a LAS/LAZ point cloud to PLY format.
+    def convert_las_to_ply(input_path, output_path, use_color=True, do_keep_sf=False, verbose=False, **kwargs):
+        las = laspy.read(input_path)
 
-        Parameters:
-            in_las (str): Path to input .las or .laz file
-            out_ply (str): Path to output .ply file
+        x = np.array(las.x, dtype=np.float32)
+        y = np.array(las.y, dtype=np.float32)
+        z = np.array(las.z, dtype=np.float32)
 
-        Returns:
-            str: Path to the saved PLY file
-        """
+        has_color = use_color and all(
+            c in las.point_format.dimension_names for c in ("red", "green", "blue")
+        )
 
-        # Read LAS file
-        las = laspy.read(in_las)
-        
-        # Get XYZ as Nx3 numpy array
-        points = np.vstack((las.x, las.y, las.z)).transpose()
+        # Fields to skip (handled separately)
+        skip_fields = {"x", "y", "z", "X", "Y", "Z"}
+        if has_color:
+            skip_fields.update({"red", "green", "blue"})
 
-        # Create Open3D point cloud
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(points)
+        scalar_fields = []
+        if do_keep_sf:
+            # Collect scalar fields
+            for name in las.point_format.dimension_names:
+                if name in skip_fields:
+                    continue
+                
+                values = np.array(getattr(las, name))
+                dtype = values.dtype
+                scalar_fields.append((f"scalar_{name}", values, dtype))
 
-        # Save as PLY
-        o3d.io.write_point_cloud(out_ply, pcd)
+        # Build dtype and data
+        dtypes = [("x", np.float32), ("y", np.float32), ("z", np.float32)]
+        arrays = [x, y, z]
+
+        if has_color:
+            r = (las.red / 65535.0 * 255).astype(np.uint8)
+            g = (las.green / 65535.0 * 255).astype(np.uint8)
+            b = (las.blue / 65535.0 * 255).astype(np.uint8)
+            dtype += [("red", np.uint8), ("green", np.uint8), ("blue", np.uint8)]
+            arrays += [r, g, b]
+
+        for name, values, dtype in scalar_fields:
+            dtypes.append((name, dtype))
+            arrays.append(values)
+
+        vertex_data = np.array(list(zip(*arrays)), dtype=dtypes)
+
+        el = PlyElement.describe(vertex_data, "vertex")
+        PlyData([el], text=False).write(output_path)
 
         if verbose:
-            print(f"PLY file saved in {out_ply}")
+            scalar_names = [n for n, _ in scalar_fields]
+            print(f"Saved to {output_path}")
+            print(f"  Points   : {len(x)}")
+            print(f"  Color    : {has_color}")
+            print(f"  Scalars  : {scalar_names}")
+    
+    @staticmethod
+    def convert_laz_to_ply(input_path, output_path, use_color=True, do_keep_sf=False, verbose=False, **kwargs):
+        las = laspy.read(input_path)
+
+        x = np.array(las.x, dtype=np.float32)
+        y = np.array(las.y, dtype=np.float32)
+        z = np.array(las.z, dtype=np.float32)
+
+        has_color = use_color and all(
+            c in las.point_format.dimension_names for c in ("red", "green", "blue")
+        )
+
+        # Fields to skip (handled separately)
+        skip_fields = {"x", "y", "z", "X", "Y", "Z"}
+        if has_color:
+            skip_fields.update({"red", "green", "blue"})
+
+        scalar_fields = []
+        if do_keep_sf:
+            # Collect scalar fields
+            for name in las.point_format.dimension_names:
+                if name in skip_fields:
+                    continue
+                
+                values = np.array(getattr(las, name))
+                dtype = values.dtype
+                scalar_fields.append((f"scalar_{name}", values, dtype))
+
+        # Build dtype and data
+        dtypes = [("x", np.float32), ("y", np.float32), ("z", np.float32)]
+        arrays = [x, y, z]
+
+        if has_color:
+            r = (las.red / 65535.0 * 255).astype(np.uint8)
+            g = (las.green / 65535.0 * 255).astype(np.uint8)
+            b = (las.blue / 65535.0 * 255).astype(np.uint8)
+            dtype += [("red", np.uint8), ("green", np.uint8), ("blue", np.uint8)]
+            arrays += [r, g, b]
+
+        for name, values, dtype in scalar_fields:
+            dtypes.append((name, dtype))
+            arrays.append(values)
+
+        vertex_data = np.array(list(zip(*arrays)), dtype=dtypes)
+
+        el = PlyElement.describe(vertex_data, "vertex")
+        PlyData([el], text=False).write(output_path)
+
+        if verbose:
+            scalar_names = [n for n, _ in scalar_fields]
+            print(f"Saved to {output_path}")
+            print(f"  Points   : {len(x)}")
+            print(f"  Color    : {has_color}")
+            print(f"  Scalars  : {scalar_names}")
+
+    @staticmethod
+    def convert_copclaz_to_laz(src_in, src_out, verbose=True, **kwargs):
+        las = laspy.read(src_in)
+        points = las.points.copy()
+        new_header = laspy.LasHeader(
+                    version=las.header.version,
+                    point_format=las.header.point_format
+        )
+        new_header.offsets = las.header.offsets
+        new_header.scales = las.header.scales
+        with laspy.open(src_out, mode="w", header=new_header) as f:
+            f.write_points(points)
+        if verbose:
+            print(f"COPCLAZ file saved in {src_out}")
 
 
-def convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type, verbose=False):
+def convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type, verbose=False, **kwargs):
     """
     Converts all files in a folder from one point cloud format to another.
 
@@ -174,7 +284,7 @@ def convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type, verb
         - None: Saves all converted files into the specified output folder.
     """
     
-    assert in_type in ['las', 'laz', 'pcd']
+    assert in_type in ['copclaz', 'las', 'laz', 'pcd']
     assert out_type in ['las', 'laz', 'pcd', 'ply']
     assert in_type != out_type
 
@@ -191,6 +301,22 @@ def convert_all_in_folder(src_folder_in, src_folder_out, in_type, out_type, verb
             print(f"conversion from {in_type} to {out_type} for sample {file} failed")
             print('error: ', e)
             pass
+
+
+def convert_one_file(src_file_in, src_file_out, in_type, out_type, offsets=[0,0,0], **kwargs):
+    assert in_type in ['copclaz', 'las', 'laz', 'txt']
+    assert out_type in ['las', 'laz', 'txt', 'ply']
+    assert in_type != out_type
+
+    if not hasattr(Convertions, f"convert_{in_type}_to_{out_type}"):
+        print(f"No function for converting {in_type} into {out_type}!!")
+        return
+    try:
+        _ = getattr(Convertions, f"convert_{in_type}_to_{out_type}")(src_file_in, src_file_out, verbose=False, **kwargs)
+    except Exception as e:
+        print(f"conversion from {in_type} to {out_type} for sample {src_file_in} failed")
+        print(traceback.format_exc())
+        pass
 
 
 if __name__ == "__main__":

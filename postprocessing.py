@@ -8,6 +8,13 @@ import pandas as pd
 from omegaconf import OmegaConf
 from src.quadnode import QuadNode
 from src.coherence import compute_spatial_coherence, compute_magnitude_zscore, compute_rotation_angles, compute_confidence
+from math import atan2, asin, degrees, sqrt
+
+
+def remove_A0(node, A0_inv):
+    node.global_transform = np.linalg.matmul(node.global_transform, A0_inv)
+    for child in node.children:
+        remove_A0(child, A0_inv)
 
 
 def compute_translation(node):
@@ -37,7 +44,57 @@ def compute_translation(node):
 
 
 def compute_rotation(node):
-    pass
+    # Compute translation at bbox center
+    xmin, ymin, zmin = node.bbox['min_bound']
+    xmax, ymax, zmax = node.bbox['max_bound']
+    center = np.vstack([
+        np.array([(xmax + xmin) / 2, 
+                  (ymax + ymin) / 2, 
+                  (zmax + zmin) / 2]).reshape((3, 1)), 
+        np.array([1])
+    ])
+    translated = np.linalg.matmul(node.global_transform, center)
+    diff = translated - center
+    dx, dy, dz = list(diff[:3].squeeze(-1))
+
+    norm_3d = float(np.linalg.norm(diff[:3]))
+
+    # Displacement direction: azimuth from North (Y axis), clockwise, in [0, 360°]
+    # atan2(east, north) = atan2(dx, dy)
+    DispDir = (degrees(atan2(dx, dy)) + 360) % 360
+
+    # Displacement plunge: angle below horizontal, in [0°, 90°]
+    # positive = downward
+    DispPlunge = degrees(asin(-dz / (norm_3d + 1e-10)))
+
+    # Topple direction: azimuth of the rotation axis projected on horizontal plane
+    # Extract rotation axis from the transform
+    R = node.global_transform[:3, :3]
+    cos_angle = np.clip((np.trace(R) - 1) / 2, -1, 1)
+    rotation_angle = degrees(np.arccos(cos_angle))
+
+    # Rotation axis from skew-symmetric part of R
+    axis = np.array([
+        R[2, 1] - R[1, 2],
+        R[0, 2] - R[2, 0],
+        R[1, 0] - R[0, 1]
+    ])
+    axis_norm = np.linalg.norm(axis)
+    if axis_norm > 1e-10:
+        axis = axis / axis_norm
+    else:
+        axis = np.array([0, 0, 1])  # no rotation, arbitrary axis
+
+    # Topple direction = azimuth of horizontal projection of rotation axis
+    ToppleDir = (degrees(atan2(axis[0], axis[1])) + 360) % 360
+
+    node.metrics['DispDir'] = DispDir
+    node.metrics['DispPlunge'] = DispPlunge
+    node.metrics['ToppleDir'] = ToppleDir
+    node.metrics['rotation_angle'] = rotation_angle
+    
+    for child in node.children:
+        compute_rotation(child)   
 
 
 def trim_branch(node):
@@ -72,7 +129,7 @@ def detect_absurds(node, absurd_th):
         counter += 1
         for child in node.children:
             trim_branch(child)
-        for m in ['translation_x', 'translation_y', 'dx', 'dy', 'dz', 'Disp2D', 'Disp3D']:
+        for m in node.metrics.keys():
             node.metrics[m] = node.parent.metrics[m]
         node.is_absurd = True
         node.is_leaf = True
@@ -190,7 +247,7 @@ def tree_to_list(node, list_tot, list_per_level):
         tree_to_list(child, list_tot, list_per_level)
 
 
-def postprocessing(root, src_out_gpkg, offset, suffixe='', verbose=False):
+def postprocessing(root, src_out_gpkg, offset, absurd_dist=5, suffixe='', verbose=False):
 
     # prepare paths
     src_out_gpkg = src_out_gpkg.split('.gpkg')[0] + f"_{suffixe}.gpkg"
@@ -204,28 +261,28 @@ def postprocessing(root, src_out_gpkg, offset, suffixe='', verbose=False):
 
     # Compute metrics:
     compute_translation(root)
+    compute_rotation(root)
 
     # Detect absurd values
     original_len = len(root)
-    counter = detect_absurds(root, 5)
+    counter = detect_absurds(root, absurd_dist)
     print(f"Number of absurd values: {counter} ({np.round(counter/original_len*100, 2)}%)")
 
     # Compute coherence indexes
     translation_x = [node.metrics['translation_x'] for node in list_nodes]
     translation_y = [node.metrics['translation_y'] for node in list_nodes]
     displacement = [node.metrics['Disp3D'] for node in list_nodes]
-    planarity = [node.planarity for node in list_nodes]
-    transforms = [node.global_transform for node in list_nodes]
+    planarity = [float(node.planarity) for node in list_nodes]
+    rotation_angles = [node.metrics['rotation_angle'] for node in list_nodes]
 
     spatial_coherences = compute_spatial_coherence(list_nodes, translation_x, translation_y, 40)
     magnitude_zscores = compute_magnitude_zscore(list_nodes, displacement, 40)
-    rotation_angles = compute_rotation_angles(transforms)
 
     mask_artifact = (
         (np.array(spatial_coherences) < 0.707) |       # direction disagrees with neighbors (> 45°)
         (np.array(magnitude_zscores) > 2.5) |           # magnitude is outlier among neighbors
         (np.array(rotation_angles) > 5) |              # large rotation
-        (np.array(planarity) > 0.485)           # flat surface → degenerate ICP
+        (np.array(planarity) > 0.999)           # flat surface → degenerate ICP
     )
     print(f"Number of masked samples: {np.sum(mask_artifact)} ({np.round(np.sum(mask_artifact)/mask_artifact.shape[0]*100, 2)}%)")
 
@@ -292,12 +349,6 @@ def postprocessing(root, src_out_gpkg, offset, suffixe='', verbose=False):
         )
 
 
-def remove_A0(node, A0_inv):
-    node.global_transform = np.linalg.matmul(node.global_transform, A0_inv)
-    for child in node.children:
-        remove_A0(child, A0_inv)
-
-
 if __name__ == "__main__":
     conf = OmegaConf.load('./config.yaml')
     if conf.postprocessing.src_transforms == 'default':
@@ -315,12 +366,14 @@ if __name__ == "__main__":
         root = pickle.load(f)
     offset = np.loadtxt(src_offset, delimiter=',')
 
+    absurd_th = float(conf.postprocessing.absurd_dist)
     # Postprocess with A0
     print("Postprocessing with initial alignment (w_A0)")
-    postprocessing(root, src_out_gpkg, offset, 'w_A0')
+    postprocessing(root, src_out_gpkg, offset, absurd_th, 'w_A0')
 
     # Postprocess without A0:
-    print("Postprocessing without initial alignment (wo_A0)")
+    print("\nPostprocessing without initial alignment (wo_A0)")
     A0_inv = np.linalg.inv(root.global_transform)
     remove_A0(root, A0_inv)
-    postprocessing(root, src_out_gpkg, offset, 'wo_A0')
+    postprocessing(root, src_out_gpkg, offset, absurd_th, 'wo_A0')
+    print()
